@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Sistema de Precificação e Gestão - JR Art's Gráfica</title>
+    <!-- Supabase cloud synchronization -->
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
     <!-- Tailwind CSS CDN -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- FontAwesome CDN -->
@@ -1011,8 +1013,17 @@
         let movimentacoesEstoque = [];
         let numeroOrcamentoAtual = null;
 
-        function inicializarAplicativo() {
-            carregarDadosLocais();
+        const SUPABASE_URL = 'https://atgpylmxdsdjpdmxqwsk.supabase.co';
+        const SUPABASE_PUBLISHABLE_KEY = 'sb_publishable_vlYNSLTZ40KdXZ7Aoj2ZiQ_krpzZW2e';
+        const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY);
+        let cloudUser = null;
+        let cloudReady = false;
+        let cloudApplying = false;
+        let cloudSaveTimer = null;
+        let cloudChannel = null;
+        let loginMode = 'login';
+
+        function renderizarTudo() {
             atualizarSelectClientes();
             renderizarInsumos();
             renderizarClientes();
@@ -1029,6 +1040,12 @@
             recalcular();
             calcularFita();
             calcularAdesivo();
+        }
+
+        function inicializarAplicativo() {
+            carregarDadosLocais();
+            renderizarTudo();
+            iniciarSincronizacaoNuvem();
         }
 
         window.addEventListener('DOMContentLoaded', inicializarAplicativo);
@@ -2347,6 +2364,19 @@
             reader.readAsText(file);
         }
 
+        function obterEstadoAtual() {
+            return {
+                insumos,
+                clientes,
+                pedidos,
+                vendas,
+                despesas,
+                movimentacoesEstoque,
+                orcamentosSalvos,
+                ultimoNumeroOrcamento: parseInt(localStorage.getItem('jr_grafica_ultimo_numero_orcamento'), 10) || 2000
+            };
+        }
+
         function salvarDadosLocais() {
             localStorage.setItem('jr_grafica_insumos', JSON.stringify(insumos));
             localStorage.setItem('jr_grafica_clientes', JSON.stringify(clientes));
@@ -2355,7 +2385,117 @@
             localStorage.setItem('jr_grafica_despesas', JSON.stringify(despesas));
             localStorage.setItem('jr_grafica_movimentacoes_estoque', JSON.stringify(movimentacoesEstoque));
             localStorage.setItem('jr_grafica_orcamentos', JSON.stringify(orcamentosSalvos));
+            if (!cloudApplying) agendarSalvamentoNuvem();
         }
+
+        function temDadosNuvem(data) {
+            return data && ['insumos', 'clientes', 'pedidos', 'vendas', 'despesas', 'movimentacoesEstoque', 'orcamentosSalvos']
+                .some(chave => Array.isArray(data[chave]));
+        }
+
+        function aplicarEstadoNuvem(data) {
+            if (!temDadosNuvem(data)) return;
+            cloudApplying = true;
+            if (Array.isArray(data.insumos)) insumos = data.insumos;
+            if (Array.isArray(data.clientes)) clientes = data.clientes;
+            if (Array.isArray(data.pedidos)) pedidos = data.pedidos;
+            if (Array.isArray(data.vendas)) vendas = data.vendas;
+            if (Array.isArray(data.despesas)) despesas = data.despesas;
+            if (Array.isArray(data.movimentacoesEstoque)) movimentacoesEstoque = data.movimentacoesEstoque;
+            if (Array.isArray(data.orcamentosSalvos)) orcamentosSalvos = data.orcamentosSalvos;
+            if (Number.isFinite(Number(data.ultimoNumeroOrcamento))) {
+                localStorage.setItem('jr_grafica_ultimo_numero_orcamento', String(Number(data.ultimoNumeroOrcamento)));
+                numeroOrcamentoAtual = null;
+            }
+            salvarDadosLocais();
+            cloudApplying = false;
+            renderizarTudo();
+        }
+
+        async function salvarEstadoNuvem() {
+            if (!cloudReady || !cloudUser || cloudApplying) return;
+            const { error } = await supabaseClient.from('jr_grafica_state').upsert({
+                id: 'principal',
+                data: obterEstadoAtual(),
+                updated_at: new Date().toISOString(),
+                updated_by: cloudUser.id
+            });
+            if (error) console.error('Falha ao sincronizar dados:', error.message);
+        }
+
+        function agendarSalvamentoNuvem() {
+            if (!cloudReady || cloudApplying) return;
+            clearTimeout(cloudSaveTimer);
+            cloudSaveTimer = setTimeout(salvarEstadoNuvem, 350);
+        }
+
+        function criarTelaLogin() {
+            if (document.getElementById('cloudLogin')) return;
+            const tela = document.createElement('div');
+            tela.id = 'cloudLogin';
+            tela.style.cssText = 'position:fixed;inset:0;z-index:9999;background:linear-gradient(135deg,#0f172a,#312e81);display:none;align-items:center;justify-content:center;padding:20px;font-family:Inter,Arial,sans-serif;';
+            tela.innerHTML = `<div style="width:min(420px,100%);background:#fff;border-radius:24px;padding:28px;box-shadow:0 24px 70px #0006"><div style="text-align:center;margin-bottom:22px"><div style="width:64px;height:64px;margin:0 auto 12px;border-radius:18px;background:linear-gradient(135deg,#4f46e5,#0f172a);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:900;font-size:24px">JR</div><h2 style="margin:0;color:#0f172a;font-size:22px">JR Art's Gráfica</h2><p style="margin:6px 0 0;color:#64748b;font-size:13px">Acesse seus dados em qualquer dispositivo</p></div><label style="display:block;font-size:12px;font-weight:700;color:#475569;margin:10px 0 5px">E-mail</label><input id="cloudEmail" type="email" autocomplete="email" placeholder="seu@email.com" style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px"><label style="display:block;font-size:12px;font-weight:700;color:#475569;margin:12px 0 5px">Senha</label><input id="cloudPassword" type="password" autocomplete="current-password" placeholder="Sua senha" style="box-sizing:border-box;width:100%;padding:12px;border:1px solid #cbd5e1;border-radius:10px;font-size:14px"><button id="cloudLoginButton" onclick="autenticarNuvem()" style="width:100%;margin-top:18px;padding:13px;border:0;border-radius:10px;background:#4f46e5;color:#fff;font-weight:800;font-size:14px">Entrar</button><button id="cloudModeButton" onclick="alternarModoLogin()" style="width:100%;margin-top:10px;padding:10px;border:0;background:transparent;color:#4f46e5;font-weight:700;font-size:13px">Ainda não tenho usuário — criar acesso</button><p id="cloudLoginMessage" style="min-height:18px;margin:12px 0 0;text-align:center;color:#dc2626;font-size:12px"></p></div>`;
+            document.body.appendChild(tela);
+        }
+
+        function mostrarTelaLogin(mensagem = '') {
+            criarTelaLogin();
+            const tela = document.getElementById('cloudLogin');
+            tela.style.display = 'flex';
+            document.getElementById('cloudLoginMessage').innerText = mensagem;
+        }
+
+        function esconderTelaLogin() {
+            const tela = document.getElementById('cloudLogin');
+            if (tela) tela.style.display = 'none';
+        }
+
+        function alternarModoLogin() {
+            loginMode = loginMode === 'login' ? 'signup' : 'login';
+            document.getElementById('cloudLoginButton').innerText = loginMode === 'login' ? 'Entrar' : 'Criar usuário';
+            document.getElementById('cloudModeButton').innerText = loginMode === 'login' ? 'Ainda não tenho usuário — criar acesso' : 'Já tenho usuário — entrar';
+            document.getElementById('cloudLoginMessage').innerText = '';
+        }
+
+        async function autenticarNuvem() {
+            const email = document.getElementById('cloudEmail').value.trim();
+            const password = document.getElementById('cloudPassword').value;
+            const message = document.getElementById('cloudLoginMessage');
+            if (!email || password.length < 6) { message.innerText = 'Informe um e-mail e uma senha com pelo menos 6 caracteres.'; return; }
+            message.style.color = '#475569'; message.innerText = 'Conectando...';
+            const result = loginMode === 'login'
+                ? await supabaseClient.auth.signInWithPassword({ email, password })
+                : await supabaseClient.auth.signUp({ email, password });
+            if (result.error) { message.style.color = '#dc2626'; message.innerText = result.error.message; return; }
+            if (loginMode === 'signup' && !result.data.session) { message.style.color = '#166534'; message.innerText = 'Usuário criado. Confirme o e-mail e depois entre.'; return; }
+            cloudUser = result.data.user;
+            await iniciarSincronizacaoNuvem(true);
+        }
+
+        async function iniciarSincronizacaoNuvem(jaAutenticado = false) {
+            if (cloudReady) return;
+            criarTelaLogin();
+            let session = null;
+            if (jaAutenticado) session = (await supabaseClient.auth.getSession()).data.session;
+            else session = (await supabaseClient.auth.getSession()).data.session;
+            if (!session) { mostrarTelaLogin(); return; }
+            cloudUser = session.user;
+            const { data: row, error } = await supabaseClient.from('jr_grafica_state').select('data').eq('id', 'principal').maybeSingle();
+            if (error) { mostrarTelaLogin('Não foi possível acessar a nuvem. Verifique se a tabela foi criada.'); console.error(error); return; }
+            cloudReady = true;
+            esconderTelaLogin();
+            if (row && temDadosNuvem(row.data)) aplicarEstadoNuvem(row.data);
+            else await salvarEstadoNuvem();
+            if (!cloudChannel) {
+                cloudChannel = supabaseClient.channel('jr-grafica-sync').on('postgres_changes', { event: '*', schema: 'public', table: 'jr_grafica_state', filter: 'id=eq.principal' }, payload => {
+                    if (payload.new && payload.new.data) aplicarEstadoNuvem(payload.new.data);
+                }).subscribe();
+            }
+        }
+
+        supabaseClient.auth.onAuthStateChange((event, session) => {
+            if (session && !cloudReady) setTimeout(() => iniciarSincronizacaoNuvem(true), 0);
+        });
 
         function lerListaLocal(chave, padrao) {
             try {
